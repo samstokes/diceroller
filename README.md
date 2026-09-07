@@ -8,7 +8,9 @@ one script, and a service worker so it works offline and installs to a home scre
 - **One tap** on any die in the grid (d4 – d100) rolls a single die.
 - **Steppers** above the grid set how many dice and a flat modifier, so `3` + `+6` then tapping
   **d6** rolls `3d6 + 6`. `reset` puts them back to a single unmodified die.
-- **Expression field** takes standard notation: `3d6 + 6`, `d20-1`, `2d8 + 1d4 + 3`.
+- **Expression field** takes standard notation: `3d6 + 6`, `d20-1`, `2d8 + 1d4 + 3`, and
+  multiplication with `x`, `*` or `×` — `2d6 x 10` sums the dice *then* multiplies, so a 2 and
+  a 5 is 70. `×` binds tighter than `+`, so `2d6 x 10 + 5` is `(2d6 x 10) + 5`.
 - **↻** re-rolls the last roll. Recent rolls are kept on the device.
 
 ### d66

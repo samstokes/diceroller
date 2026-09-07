@@ -10,6 +10,7 @@ const PRESETS = [
 ];
 const MAX_DICE = 200;          // per roll, across all terms
 const MAX_SIDES = 1000;
+const MAX_CONST = 999999;   // keeps a stray multiplier from producing 1e+21
 const HISTORY_MAX = 12;
 const HISTORY_KEY = 'dice:history';
 
@@ -42,30 +43,43 @@ function dieRange(term) {
   return term.concat ? [11, 66] : [1, term.sides];
 }
 
+// Each term is a product of factors; terms are then added or subtracted. Dice are
+// summed before their term is multiplied, so 2d6 x 10 on a 2 and a 3 is 50.
 function rollTerms(terms) {
   const groups = [];
   let total = 0;
 
-  for (const term of terms) {
-    if (term.kind === 'dice') {
-      const values = [];
-      for (let i = 0; i < term.count; i++) {
-        values.push(term.concat ? rollConcat() : rollDie(term.sides));
+  terms.forEach((term, ti) => {
+    let product = 1;
+
+    term.factors.forEach((factor, fi) => {
+      // How this group joins the one before it — drives the operator chips.
+      const op = fi > 0 ? '×' : (term.sign < 0 ? '−' : (ti === 0 ? null : '+'));
+
+      if (factor.kind === 'dice') {
+        const values = [];
+        for (let i = 0; i < factor.count; i++) {
+          values.push(factor.concat ? rollConcat() : rollDie(factor.sides));
+        }
+        product *= values.reduce((a, b) => a + b, 0);
+        groups.push({ kind: 'dice', op, sides: factor.sides, concat: factor.concat, values });
+      } else {
+        product *= factor.value;
+        groups.push({ kind: 'const', op, value: factor.value });
       }
-      total += term.sign * values.reduce((a, b) => a + b, 0);
-      groups.push({ kind: 'dice', sign: term.sign, sides: term.sides, concat: term.concat, values });
-    } else {
-      total += term.sign * term.value;
-      groups.push({ kind: 'const', sign: term.sign, value: term.value });
-    }
-  }
+    });
+
+    total += term.sign * product;
+  });
 
   return { terms, groups, total, label: formatTerms(terms) };
 }
 
 function formatTerms(terms) {
   return terms.map((t, i) => {
-    const body = t.kind === 'dice' ? `${t.count}d${t.sides}` : String(t.value);
+    const body = t.factors
+      .map((f) => (f.kind === 'dice' ? `${f.count}d${f.sides}` : String(f.value)))
+      .join(' × ');
     if (i === 0) return (t.sign < 0 ? '−' : '') + body;
     return (t.sign < 0 ? ' − ' : ' + ') + body;
   }).join('');
@@ -73,7 +87,8 @@ function formatTerms(terms) {
 
 // --- expression parsing ----------------------------------------------------
 
-// Dice terms and whole numbers joined by + and -: "3d6 + 6", "d20-1", "2d8 + 1d4 + 3".
+// Dice and whole numbers joined by + and -, with x binding tighter, so
+// "2d6 x 10 + 5" is (2d6 x 10) + 5. Also "3d6 + 6", "d20-1", "2d8 + 1d4 + 3".
 function parseExpression(source) {
   let rest = String(source).trim();
   if (!rest) throw new Error('Type something like 3d6 + 6');
@@ -82,8 +97,34 @@ function parseExpression(source) {
   let dice = 0;
   let expectSign = false;
 
+  const skipSpace = () => { rest = rest.replace(/^\s+/, ''); };
+
+  // A single die group or a whole number.
+  const parseFactor = () => {
+    const diceMatch = /^(\d*)\s*[dD]\s*(\d+)/.exec(rest);
+    if (diceMatch) {
+      const n = diceMatch[1] === '' ? 1 : parseInt(diceMatch[1], 10);
+      const sides = parseInt(diceMatch[2], 10);
+      if (n < 1) throw new Error('Need at least one die');
+      if (sides < 2) throw new Error('A die needs at least 2 sides');
+      if (sides > MAX_SIDES) throw new Error(`${sides} sides is more than I can draw (max ${MAX_SIDES})`);
+      dice += n;
+      if (dice > MAX_DICE) throw new Error(`That's over ${MAX_DICE} dice`);
+      rest = rest.slice(diceMatch[0].length);
+      // "d66" is the Games Workshop die, not a 66-sided one — nobody rolls one of those.
+      return { kind: 'dice', count: n, sides, concat: sides === 66 };
+    }
+
+    const numMatch = /^(\d+)/.exec(rest);
+    if (!numMatch) throw new Error(`Don't understand "${rest}"`);
+    const value = parseInt(numMatch[1], 10);
+    if (value > MAX_CONST) throw new Error(`${value} is bigger than I can work with`);
+    rest = rest.slice(numMatch[0].length);
+    return { kind: 'const', value };
+  };
+
   while (rest) {
-    rest = rest.replace(/^\s+/, '');
+    skipSpace();
     if (!rest) break;
 
     let sign = 1;
@@ -95,25 +136,19 @@ function parseExpression(source) {
       throw new Error(`Expected + or − before "${rest}"`);
     }
 
-    const diceMatch = /^(\d*)\s*[dD]\s*(\d+)/.exec(rest);
-    if (diceMatch) {
-      const n = diceMatch[1] === '' ? 1 : parseInt(diceMatch[1], 10);
-      const sides = parseInt(diceMatch[2], 10);
-      if (n < 1) throw new Error('Need at least one die');
-      if (sides < 2) throw new Error('A die needs at least 2 sides');
-      if (sides > MAX_SIDES) throw new Error(`${sides} sides is more than I can draw (max ${MAX_SIDES})`);
-      dice += n;
-      if (dice > MAX_DICE) throw new Error(`That's over ${MAX_DICE} dice`);
-      // "d66" is the Games Workshop die, not a 66-sided one — nobody rolls one of those.
-      terms.push({ kind: 'dice', sign, count: n, sides, concat: sides === 66 });
-      rest = rest.slice(diceMatch[0].length);
-    } else {
-      const numMatch = /^(\d+)/.exec(rest);
-      if (!numMatch) throw new Error(`Don't understand "${rest}"`);
-      terms.push({ kind: 'const', sign, value: parseInt(numMatch[1], 10) });
-      rest = rest.slice(numMatch[0].length);
+    // Soak up the whole product here: x binds tighter than + and -.
+    const factors = [parseFactor()];
+    for (;;) {
+      skipSpace();
+      const mulMatch = /^([x*×X])\s*/.exec(rest);
+      if (!mulMatch) break;
+      rest = rest.slice(mulMatch[0].length);
+      skipSpace();
+      if (!rest) throw new Error('Nothing to multiply by');
+      factors.push(parseFactor());
     }
 
+    terms.push({ sign, factors });
     expectSign = true;
   }
 
@@ -134,6 +169,13 @@ function dieChip(value, sides, klass) {
   return chip;
 }
 
+function opChip(text) {
+  const chip = document.createElement('div');
+  chip.className = 'die mod';
+  chip.textContent = text;
+  return chip;
+}
+
 function renderRoll(roll) {
   el('placeholder').hidden = true;
   el('error').hidden = true;
@@ -147,18 +189,17 @@ function renderRoll(roll) {
 
   for (const group of roll.groups) {
     if (group.kind === 'dice') {
+      // The sign belongs to the term, not the die: a die that rolled 3 shows 3.
+      if (group.op) dice.append(opChip(group.op));
       for (const value of group.values) {
         const [low, high] = dieRange(group);
         let klass = '';
         if (value === high) klass = 'is-max';
         else if (value === low) klass = 'is-min';
-        dice.append(dieChip(group.sign < 0 ? -value : value, group.sides, klass));
+        dice.append(dieChip(value, group.sides, klass));
       }
-    } else if (group.value !== 0) {
-      const chip = document.createElement('div');
-      chip.className = 'die mod';
-      chip.textContent = (group.sign < 0 ? '−' : '+') + group.value;
-      dice.append(chip);
+    } else if (group.value !== 0 || group.op === '×') {
+      dice.append(opChip((group.op || '') + group.value));
     }
   }
 
@@ -244,8 +285,10 @@ function performRoll(terms) {
 }
 
 function rollPreset(preset) {
-  const terms = [{ kind: 'dice', sign: 1, count, sides: preset.sides, concat: preset.concat }];
-  if (mod !== 0) terms.push({ kind: 'const', sign: mod < 0 ? -1 : 1, value: Math.abs(mod) });
+  const terms = [{ sign: 1, factors: [{ kind: 'dice', count, sides: preset.sides, concat: preset.concat }] }];
+  if (mod !== 0) {
+    terms.push({ sign: mod < 0 ? -1 : 1, factors: [{ kind: 'const', value: Math.abs(mod) }] });
+  }
   performRoll(terms);
 }
 
