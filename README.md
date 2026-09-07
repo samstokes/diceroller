@@ -17,7 +17,8 @@ one script, and a service worker so it works offline and installs to a home scre
 
 `d66` is the Games Workshop die: two d6 read as tens and units, so a 3 and a 1 is **31**, not 4.
 It gives 36 equally likely results from 11 to 66 — no 0s, no 7s, and a flat distribution rather
-than the bell curve a 2d6 sum would give you. It's on the preset grid and in expressions
+than the bell curve a 2d6 sum would give you. Both d6 faces are shown alongside the value they
+read as (`3 5 = 35`), so you can see what was physically rolled. It's on the preset grid and in expressions
 (`d66`, `2d66`, `d66 + 10`); highlighting treats 11 and 66 as the naturals.
 
 Because of this, `d66` never means a 66-sided die — nobody rolls one of those. `d666` still

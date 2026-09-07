@@ -33,9 +33,10 @@ function rollDie(sides) {
   return (v % sides) + 1;
 }
 
-// A d66 is two d6 concatenated: 11-66, 36 equally likely values, no 7s and no 0s.
-function rollConcat() {
-  return rollDie(6) * 10 + rollDie(6);
+// A d66 is two d6 read as tens and units: 11-66, 36 equally likely values, no 7s
+// and no 0s. Both faces are kept so the display can show what was physically rolled.
+function rollConcatPair() {
+  return [rollDie(6), rollDie(6)];
 }
 
 // Lowest and highest face, for highlighting naturals.
@@ -58,11 +59,18 @@ function rollTerms(terms) {
 
       if (factor.kind === 'dice') {
         const values = [];
+        const pairs = factor.concat ? [] : null;   // the d6 faces behind each d66 value
         for (let i = 0; i < factor.count; i++) {
-          values.push(factor.concat ? rollConcat() : rollDie(factor.sides));
+          if (factor.concat) {
+            const pair = rollConcatPair();
+            pairs.push(pair);
+            values.push(pair[0] * 10 + pair[1]);
+          } else {
+            values.push(rollDie(factor.sides));
+          }
         }
         product *= values.reduce((a, b) => a + b, 0);
-        groups.push({ kind: 'dice', op, sides: factor.sides, concat: factor.concat, values });
+        groups.push({ kind: 'dice', op, sides: factor.sides, concat: factor.concat, values, pairs });
       } else {
         product *= factor.value;
         groups.push({ kind: 'const', op, value: factor.value });
@@ -169,6 +177,14 @@ function dieChip(value, sides, klass) {
   return chip;
 }
 
+// A bare separator, not a value: no chip border.
+function joinChip(text) {
+  const span = document.createElement('span');
+  span.className = 'join';
+  span.textContent = text;
+  return span;
+}
+
 function opChip(text) {
   const chip = document.createElement('div');
   chip.className = 'die mod';
@@ -191,13 +207,18 @@ function renderRoll(roll) {
     if (group.kind === 'dice') {
       // The sign belongs to the term, not the die: a die that rolled 3 shows 3.
       if (group.op) dice.append(opChip(group.op));
-      for (const value of group.values) {
+      group.values.forEach((value, i) => {
+        // A d66 is two dice, so show both faces and then what they read as.
+        if (group.pairs) {
+          for (const face of group.pairs[i]) dice.append(dieChip(face, 6, 'part'));
+          dice.append(joinChip('='));
+        }
         const [low, high] = dieRange(group);
         let klass = '';
         if (value === high) klass = 'is-max';
         else if (value === low) klass = 'is-min';
         dice.append(dieChip(value, group.sides, klass));
-      }
+      });
     } else if (group.value !== 0 || group.op === '×') {
       dice.append(opChip((group.op || '') + group.value));
     }
@@ -375,4 +396,4 @@ renderHistory();
 renderHint();
 
 // Exposed for the headless smoke test.
-window.__dice = { parseExpression, rollTerms, rollDie, rollConcat };
+window.__dice = { parseExpression, rollTerms, rollDie, rollConcatPair };

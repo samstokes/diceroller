@@ -81,7 +81,7 @@
 
   .expr {
     color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums;
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
   }
   .again {
     background: none; border: 1px solid var(--border); border-radius: 999px;
@@ -100,6 +100,10 @@
   .die.is-max { border-color: var(--max); color: var(--max); }
   .die.is-min { border-color: var(--min); color: var(--min); }
   .die.mod { background: transparent; border-style: dashed; color: var(--muted); }
+  /* The d6 faces behind a d66: present, but the combined value is the answer. */
+  .die.part { min-width: 30px; padding: 4px 7px; font-size: 14px; color: var(--muted); }
+  .die.part .sides { font-size: 9px; }
+  .dice .join { align-self: center; color: var(--muted); font-size: 13px; }
 
   .placeholder { color: var(--muted); font-size: 15px; }
   .error { color: var(--min); font-size: 15px; }
