@@ -1,12 +1,14 @@
 'use strict';
 
-// The app has no backend and no data, so this only exists to make the app work
-// offline (and to satisfy Chrome's install criteria on Android). It caches the
-// shell and nothing else.
+// The app has no backend and no data, so this only exists to make it work offline
+// (and to satisfy Chrome's install criteria on Android). It caches the app's own
+// files and nothing else.
 //
-// Bump VERSION whenever a shell file changes, or installed copies keep serving
-// the old one until their *second* load.
-const VERSION = 'v2';
+// Stale-while-revalidate: a launch is served from the cache instantly, and the
+// cache is refreshed from the network in the background, so a deploy lands on the
+// next launch by itself. Bumping VERSION forces it immediately; it is a belt-and-
+// braces measure rather than the only way an update can arrive.
+const VERSION = 'v3';
 const SHELL = 'dice-shell-' + VERSION;
 
 const ASSETS = [
@@ -37,11 +39,22 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   if (new URL(request.url).origin !== self.location.origin) return;
 
-  // Navigations (including ?roll=… deep links) resolve to the cached shell.
-  if (request.mode === 'navigate') {
-    event.respondWith(caches.match('./index.html').then((cached) => cached || fetch(request)));
-    return;
-  }
+  // Every navigation (including ?roll=… deep links) is answered by index.html, so
+  // they all share its cache entry.
+  const key = request.mode === 'navigate' ? './index.html' : request;
 
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+  // Kick the refresh off synchronously: waitUntil has to be called while the event
+  // is still active, and it's what keeps the worker alive to finish writing the
+  // cache after we've already answered from it.
+  const network = fetch(request)
+    .then(async (res) => {
+      if (res.ok) (await caches.open(SHELL)).put(key, res.clone());
+      return res;
+    })
+    .catch(() => null); // offline: the cached copy below is the answer
+  event.waitUntil(network);
+
+  event.respondWith(
+    caches.match(key).then(async (cached) => cached || (await network) || Response.error())
+  );
 });

@@ -35,8 +35,10 @@ in-app **Install** button), or Safari *Share* → *Add to Home Screen*.
 python3 -m http.server 8765   # then open http://localhost:8765/
 ```
 
-Bump `VERSION` in `sw.js` whenever a shell file changes, or installed copies keep serving the
-old one until their second load.
+The service worker is stale-while-revalidate: a launch paints instantly from the cache, and the
+cache refreshes in the background, so a deploy arrives on the launch after next without any
+action. Bumping `VERSION` in `sw.js` forces it a launch sooner, but it's no longer the only way
+an update can land.
 
 ## Fairness
 
