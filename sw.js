@@ -6,7 +6,7 @@
 //
 // Bump VERSION whenever a shell file changes, or installed copies keep serving
 // the old one until their *second* load.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = 'dice-shell-' + VERSION;
 
 const ASSETS = [

@@ -11,6 +11,16 @@ one script, and a service worker so it works offline and installs to a home scre
 - **Expression field** takes standard notation: `3d6 + 6`, `d20-1`, `2d8 + 1d4 + 3`.
 - **↻** re-rolls the last roll. Recent rolls are kept on the device.
 
+### d66
+
+`d66` is the Games Workshop die: two d6 read as tens and units, so a 3 and a 1 is **31**, not 4.
+It gives 36 equally likely results from 11 to 66 — no 0s, no 7s, and a flat distribution rather
+than the bell curve a 2d6 sum would give you. It's on the preset grid and in expressions
+(`d66`, `2d66`, `d66 + 10`); highlighting treats 11 and 66 as the naturals.
+
+Because of this, `d66` never means a 66-sided die — nobody rolls one of those. `d666` still
+parses as an ordinary 666-sided die.
+
 Each die's face is shown alongside the total; naturals and 1s are highlighted.
 `?roll=3d6%2B6` in the URL rolls on load.
 

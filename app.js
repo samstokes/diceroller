@@ -2,7 +2,12 @@
 
 // A dice roller. Everything is local: no network, no storage beyond this device.
 
-const PRESETS = [4, 6, 8, 10, 12, 20, 100];
+const PRESETS = [
+  { sides: 4 }, { sides: 6 }, { sides: 8 }, { sides: 10 },
+  { sides: 12 }, { sides: 20 }, { sides: 100 },
+  // Games Workshop's d66: two d6 read as tens and units, so 3 and 1 is 31, not 4.
+  { sides: 66, concat: true },
+];
 const MAX_DICE = 200;          // per roll, across all terms
 const MAX_SIDES = 1000;
 const HISTORY_MAX = 12;
@@ -27,6 +32,16 @@ function rollDie(sides) {
   return (v % sides) + 1;
 }
 
+// A d66 is two d6 concatenated: 11-66, 36 equally likely values, no 7s and no 0s.
+function rollConcat() {
+  return rollDie(6) * 10 + rollDie(6);
+}
+
+// Lowest and highest face, for highlighting naturals.
+function dieRange(term) {
+  return term.concat ? [11, 66] : [1, term.sides];
+}
+
 function rollTerms(terms) {
   const groups = [];
   let total = 0;
@@ -34,9 +49,11 @@ function rollTerms(terms) {
   for (const term of terms) {
     if (term.kind === 'dice') {
       const values = [];
-      for (let i = 0; i < term.count; i++) values.push(rollDie(term.sides));
+      for (let i = 0; i < term.count; i++) {
+        values.push(term.concat ? rollConcat() : rollDie(term.sides));
+      }
       total += term.sign * values.reduce((a, b) => a + b, 0);
-      groups.push({ kind: 'dice', sign: term.sign, sides: term.sides, values });
+      groups.push({ kind: 'dice', sign: term.sign, sides: term.sides, concat: term.concat, values });
     } else {
       total += term.sign * term.value;
       groups.push({ kind: 'const', sign: term.sign, value: term.value });
@@ -87,7 +104,8 @@ function parseExpression(source) {
       if (sides > MAX_SIDES) throw new Error(`${sides} sides is more than I can draw (max ${MAX_SIDES})`);
       dice += n;
       if (dice > MAX_DICE) throw new Error(`That's over ${MAX_DICE} dice`);
-      terms.push({ kind: 'dice', sign, count: n, sides });
+      // "d66" is the Games Workshop die, not a 66-sided one — nobody rolls one of those.
+      terms.push({ kind: 'dice', sign, count: n, sides, concat: sides === 66 });
       rest = rest.slice(diceMatch[0].length);
     } else {
       const numMatch = /^(\d+)/.exec(rest);
@@ -130,11 +148,10 @@ function renderRoll(roll) {
   for (const group of roll.groups) {
     if (group.kind === 'dice') {
       for (const value of group.values) {
+        const [low, high] = dieRange(group);
         let klass = '';
-        if (group.values.length > 0 && group.sides > 1) {
-          if (value === group.sides) klass = 'is-max';
-          else if (value === 1) klass = 'is-min';
-        }
+        if (value === high) klass = 'is-max';
+        else if (value === low) klass = 'is-min';
         dice.append(dieChip(group.sign < 0 ? -value : value, group.sides, klass));
       }
     } else if (group.value !== 0) {
@@ -226,8 +243,8 @@ function performRoll(terms) {
   if (navigator.vibrate) navigator.vibrate(12);
 }
 
-function rollPreset(sides) {
-  const terms = [{ kind: 'dice', sign: 1, count, sides }];
+function rollPreset(preset) {
+  const terms = [{ kind: 'dice', sign: 1, count, sides: preset.sides, concat: preset.concat }];
   if (mod !== 0) terms.push({ kind: 'const', sign: mod < 0 ? -1 : 1, value: Math.abs(mod) });
   performRoll(terms);
 }
@@ -244,11 +261,11 @@ function rollFromInput() {
 // --- wiring ----------------------------------------------------------------
 
 const grid = el('grid');
-for (const sides of PRESETS) {
+for (const preset of PRESETS) {
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = 'd' + sides;
-  button.addEventListener('click', () => rollPreset(sides));
+  button.textContent = 'd' + preset.sides;
+  button.addEventListener('click', () => rollPreset(preset));
   grid.append(button);
 }
 
@@ -315,4 +332,4 @@ renderHistory();
 renderHint();
 
 // Exposed for the headless smoke test.
-window.__dice = { parseExpression, rollTerms, rollDie };
+window.__dice = { parseExpression, rollTerms, rollDie, rollConcat };
