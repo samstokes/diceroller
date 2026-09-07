@@ -1,0 +1,21 @@
+{
+  "name": "Dice",
+  "short_name": "Dice",
+  "description": "Roll dice: one-tap presets, custom counts and modifiers, and expressions like 3d6 + 6.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "categories": ["games", "utilities"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Roll d20", "url": "./?roll=d20" },
+    { "name": "Roll 3d6", "url": "./?roll=3d6" }
+  ]
+}

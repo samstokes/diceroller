@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dice</title>
+<meta name="description" content="Roll dice: one-tap presets, custom counts and modifiers, and expressions like 3d6 + 6.">
+<meta name="theme-color" content="#0e1116">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<style>
+  /* Our own display rules outrank the UA's [hidden]; restate it or "hidden" elements show. */
+  [hidden] { display: none !important; }
+
+  * { box-sizing: border-box; }
+
+  :root {
+    --bg: #0e1116;
+    --surface: #171d26;
+    --surface-2: #1f2733;
+    --border: #2a323f;
+    --text: #e8ecf2;
+    --muted: #8b97a8;
+    --accent: #a78bfa;
+    --accent-dim: #6d5bb8;
+    --max: #4ade80;
+    --min: #f87171;
+  }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+             max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .wrap { max-width: 520px; margin: 0 auto; display: grid; gap: 14px; }
+
+  header {
+    display: flex; align-items: center; gap: 10px;
+  }
+  h1 {
+    margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .02em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  h1 .pip { color: var(--accent); font-size: 20px; line-height: 1; }
+  .spacer { flex: 1; }
+
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  .ghost {
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 7px 14px; font-size: 14px;
+  }
+  .ghost:active { background: var(--surface-2); }
+
+  /* --- result ------------------------------------------------------------- */
+
+  .result {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 18px 16px 16px;
+    text-align: center;
+    min-height: 188px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px;
+  }
+
+  .total {
+    font-size: 64px; line-height: 1; font-weight: 700;
+    font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+  }
+  .total.rolling { color: var(--accent-dim); }
+
+  .expr {
+    color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .again {
+    background: none; border: 1px solid var(--border); border-radius: 999px;
+    width: 30px; height: 30px; padding: 0; color: var(--muted); font-size: 15px;
+  }
+  .again:active { background: var(--surface-2); color: var(--text); }
+
+  .dice { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+
+  .die {
+    min-width: 38px; padding: 5px 9px;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  .die .sides { display: block; font-size: 10px; font-weight: 500; color: var(--muted); }
+  .die.is-max { border-color: var(--max); color: var(--max); }
+  .die.is-min { border-color: var(--min); color: var(--min); }
+  .die.mod { background: transparent; border-style: dashed; color: var(--muted); }
+
+  .placeholder { color: var(--muted); font-size: 15px; }
+  .error { color: var(--min); font-size: 15px; }
+
+  @keyframes pop { from { transform: scale(.86); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .animate .die { animation: pop .18s ease-out both; }
+
+  /* --- controls ----------------------------------------------------------- */
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; padding: 14px; display: grid; gap: 12px;
+  }
+
+  .steppers { display: flex; gap: 10px; }
+  .stepper { flex: 1; display: flex; align-items: center; gap: 2px;
+             background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; }
+  .stepper button {
+    background: none; border: 0; width: 40px; height: 42px; font-size: 20px; color: var(--muted);
+    border-radius: 12px;
+  }
+  .stepper button:active { color: var(--accent); }
+  .stepper .val { flex: 1; text-align: center; font-variant-numeric: tabular-nums; }
+  .stepper .val b { display: block; font-size: 16px; font-weight: 650; line-height: 1.1; }
+  .stepper .val span { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .grid button {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 14px;
+    height: 56px; font-size: 18px; font-weight: 650;
+    transition: transform .06s ease, border-color .12s ease;
+  }
+  .grid button:active { transform: scale(.95); border-color: var(--accent); color: var(--accent); }
+
+  .hint { display: flex; align-items: center; justify-content: center; gap: 8px;
+          font-size: 13px; color: var(--muted); min-height: 22px; }
+  .hint b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hint button { background: none; border: 0; color: var(--accent); font-size: 13px; padding: 2px 4px; }
+
+  /* --- expression --------------------------------------------------------- */
+
+  form { display: flex; gap: 8px; }
+  input {
+    flex: 1; min-width: 0; height: 48px; padding: 0 16px;
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--surface); color: inherit;
+    font-size: 16px; /* below 16px, Android zooms the page on focus */
+    appearance: none;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  input::placeholder { color: #63708290; }
+  form button {
+    height: 48px; padding: 0 20px; border: 0; border-radius: 14px;
+    background: var(--accent); color: #14101f; font-weight: 650;
+  }
+  form button:active { background: var(--accent-dim); }
+
+  /* --- history ------------------------------------------------------------ */
+
+  .history summary {
+    list-style: none; cursor: pointer; color: var(--muted); font-size: 14px;
+    padding: 4px 2px; display: flex; align-items: center; gap: 6px;
+  }
+  .history summary::-webkit-details-marker { display: none; }
+  .history summary::before { content: "▸"; font-size: 11px; }
+  .history[open] summary::before { content: "▾"; }
+  .history ol { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 1px; }
+  .history li {
+    display: flex; align-items: baseline; gap: 10px; padding: 8px 12px;
+    background: var(--surface); font-size: 14px; color: var(--muted);
+  }
+  .history li:first-child { border-radius: 12px 12px 0 0; }
+  .history li:last-child { border-radius: 0 0 12px 12px; }
+  .history li:only-child { border-radius: 12px; }
+  .history li b { color: var(--text); font-size: 16px; font-variant-numeric: tabular-nums;
+                  min-width: 2.2em; text-align: right; }
+  .history li .rolls { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                       font-variant-numeric: tabular-nums; }
+  .history .clear { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 6px 2px; }
+
+  footer { text-align: center; color: #5b6675; font-size: 12px; padding-bottom: 4px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1><span class="pip">⚄</span> Dice</h1>
+    <div class="spacer"></div>
+    <button id="install" class="ghost" hidden>Install</button>
+  </header>
+
+  <section class="result" id="result" aria-live="polite">
+    <p class="placeholder" id="placeholder">Tap a die to roll.</p>
+    <div id="output" hidden>
+      <div class="total" id="total">—</div>
+      <div class="expr"><span id="exprLabel"></span>
+        <button class="again" id="again" title="Roll again" aria-label="Roll again">↻</button>
+      </div>
+      <div class="dice" id="dice"></div>
+    </div>
+    <p class="error" id="error" hidden></p>
+  </section>
+
+  <section class="panel">
+    <div class="steppers">
+      <div class="stepper">
+        <button type="button" data-step="count" data-delta="-1" aria-label="Fewer dice">−</button>
+        <div class="val"><b id="countVal">1</b><span>dice</span></div>
+        <button type="button" data-step="count" data-delta="1" aria-label="More dice">+</button>
+      </div>
+      <div class="stepper">
+        <button type="button" data-step="mod" data-delta="-1" aria-label="Lower modifier">−</button>
+        <div class="val"><b id="modVal">+0</b><span>modifier</span></div>
+        <button type="button" data-step="mod" data-delta="1" aria-label="Raise modifier">+</button>
+      </div>
+    </div>
+
+    <div class="grid" id="grid"></div>
+
+    <p class="hint"><span id="hintText">Tap a die to roll it.</span>
+      <button type="button" id="reset" hidden>reset</button>
+    </p>
+  </section>
+
+  <form id="exprForm">
+    <input id="exprInput" type="text" placeholder="3d6 + 6" enterkeyhint="go"
+           autocapitalize="off" autocorrect="off" spellcheck="false"
+           aria-label="Dice expression, for example 3d6 + 6">
+    <button type="submit">Roll</button>
+  </form>
+
+  <details class="history" id="history" hidden>
+    <summary>Recent rolls</summary>
+    <ol id="historyList"></ol>
+    <button class="clear" id="clearHistory" type="button">Clear history</button>
+  </details>
+
+  <footer>Fair rolls from your device's crypto RNG.</footer>
+</div>
+
+<script src="./app.js"></script>
+</body>
+</html>
