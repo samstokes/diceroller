@@ -25,6 +25,12 @@ Because of this, `d66` never means a 66-sided die — nobody rolls one of those.
 parses as an ordinary 666-sided die.
 
 Each die's face is shown alongside the total; naturals and 1s are highlighted.
+
+Above the total, the dice tumble onto a little tray and land on what they rolled: a d100 as a
+tens and a units d10, a d66 as its two d6, up to 12 dice (the chips list all of them). It's a
+hand-rolled flat-shaded renderer on a 2D canvas (`tray.js`, no libraries or textures), and
+purely decorative: the result is on screen before the dice start moving. Dice the tray has no
+shape for (`d7`, `d1000`) are just left off it, and *reduce motion* shows them already at rest.
 `?roll=3d6%2B6` in the URL rolls on load.
 
 ## Install

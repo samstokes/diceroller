@@ -105,6 +105,9 @@
   .die.part .sides { font-size: 9px; }
   .dice .join { align-self: center; color: var(--muted); font-size: 13px; }
 
+  /* The 3D dice. Purely decorative: the numbers below are the result. */
+  .tray { display: block; width: 100%; height: clamp(96px, 20vh, 170px); margin: -6px 0 -2px; }
+
   .placeholder { color: var(--muted); font-size: 15px; }
   .error { color: var(--min); font-size: 15px; }
 
@@ -201,6 +204,7 @@
   </header>
 
   <section class="result" id="result" aria-live="polite">
+    <canvas class="tray" id="tray" aria-hidden="true"></canvas>
     <p class="placeholder" id="placeholder">Tap a die to roll.</p>
     <div id="output" hidden>
       <div class="total" id="total">—</div>
@@ -249,6 +253,7 @@
   <footer>Fair rolls from your device's crypto RNG.</footer>
 </div>
 
+<script src="./tray.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

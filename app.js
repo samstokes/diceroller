@@ -16,6 +16,9 @@ const HISTORY_KEY = 'dice:history';
 
 const el = (id) => document.getElementById(id);
 
+// The 3D dice above the total. Decorative, so a missing tray.js mustn't stop rolls.
+const tray = window.DiceTray ? DiceTray.create(el('tray')) : { roll() {}, clear() {}, rest() {} };
+
 let count = 1;      // dice per tap on the grid
 let mod = 0;        // flat modifier added to a grid roll
 let lastRoll = null; // the parsed terms of the last roll, for "roll again"
@@ -224,6 +227,8 @@ function renderRoll(roll) {
     }
   }
 
+  tray.roll(roll.groups);
+
   // Restart the pop-in animation on each roll.
   const result = el('result');
   result.classList.remove('animate');
@@ -236,6 +241,7 @@ function showError(message) {
   el('output').hidden = true;
   el('error').hidden = false;
   el('error').textContent = message;
+  tray.clear();
 }
 
 function renderHint() {
@@ -394,6 +400,9 @@ if (shared) {
 loadHistory();
 renderHistory();
 renderHint();
+
+// Something to look at before the first roll: a d20 at rest on its 20.
+if (!shared) tray.rest([{ kind: 'dice', sides: 20, values: [20] }]);
 
 // Exposed for the headless smoke test.
 window.__dice = { parseExpression, rollTerms, rollDie, rollConcatPair };
