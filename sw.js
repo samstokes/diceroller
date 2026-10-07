@@ -8,13 +8,14 @@
 // cache is refreshed from the network in the background, so a deploy lands on the
 // next launch by itself. Bumping VERSION forces it immediately; it is a belt-and-
 // braces measure rather than the only way an update can arrive.
-const VERSION = 'v5';
+const VERSION = 'v6';
 const SHELL = 'dice-shell-' + VERSION;
 
 const ASSETS = [
   './',
   './index.html',
   './app.js',
+  './tray.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
