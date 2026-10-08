@@ -517,6 +517,9 @@
       return false;
     }
 
+    // Runs only while a recorded throw is playing: the physics finished before the
+    // first frame, and once the last frame is drawn nothing is scheduled again, so a
+    // tray at rest costs no CPU (and no battery) until the next roll or a resize.
     function tick(now) {
       frame = draw(now) ? requestAnimationFrame(tick) : 0;
     }
