@@ -1,11 +1,10 @@
 'use strict';
 
-// A tiny 3D dice tray: flat-shaded polyhedra on a 2D canvas, no libraries and no
-// textures. It's decoration only — the result is already on screen when the dice
-// start tumbling, so it never holds a roll up.
+// A 3D dice tray: flat-shaded polyhedra on a 2D canvas, thrown by cannon-es physics.
+// It's decoration only — the result is already on screen when the dice start
+// tumbling, so it never holds a roll up, and the physics library loads after startup.
 
 (() => {
-  const DURATION = 750;       // ms from throw to rest
   const MAX_BODIES = 12;      // the chips below the total list every die; this is a sample
   const PHI = (1 + Math.sqrt(5)) / 2;
 
@@ -160,6 +159,8 @@
   };
 
   // Each body is one physical die: a d66 is two d6, a d100 is a tens and a units d10.
+  // `face` is the index of the label it has to show; on a d4 that's a corner, since a
+  // d4 is read from the number at its top point.
   function bodiesFor(groups) {
     const bodies = [];
     for (const g of groups) {
@@ -176,31 +177,157 @@
         }
       });
     }
-    return bodies.slice(0, MAX_BODIES);
+    return bodies.slice(0, MAX_BODIES).map((b) => ({ ...b, perm: null }));
   }
 
-  // Where each body comes to rest: the rolled face towards us, tipped back a little
-  // so the die reads as a solid rather than a flat polygon.
-  function restingPose(body) {
-    const f = shape(body.sides).faces[body.face];
-    const toFront = [...f.right, ...f.up, ...f.normal];   // face frame -> view axes
-    const twist = rotation([0, 0, 1], (Math.random() - 0.5) * 0.35);
-    const tilt = mul(rotation([1, 0, 0], -0.42), rotation([0, 1, 0], (Math.random() - 0.5) * 0.5));
-    return mul(tilt, mul(twist, toFront));
+  // The direction, in the die's own frame, that ends up pointing at the sky.
+  function upOf(b, idx) {
+    const { verts, faces } = shape(b.sides);
+    return b.sides === 4 ? verts[idx] : faces[idx].normal;
   }
 
-  function prepare(body, i) {
-    const axis = norm([Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5]);
-    return {
-      ...body,
-      rest: restingPose(body),
-      axis,
-      spin: (2.5 + Math.random() * 2) * Math.PI,
-      // Thrown in from one side and from above, a little out of step with each other.
-      fromX: (Math.random() < 0.5 ? -1 : 1) * (0.6 + Math.random() * 0.8),
-      fromY: 1.2 + Math.random() * 0.8,
-      delay: i * 25 + Math.random() * 60,
-    };
+  // Whichever label slot is pointing up for a body orientation `m` (body -> world).
+  function landed(b, m) {
+    const n = b.sides === 4 ? 4 : shape(b.sides).faces.length;
+    let best = 0, bestY = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const y = apply(m, upOf(b, i))[1];
+      if (y > bestY) { bestY = y; best = i; }
+    }
+    return best;
+  }
+
+  // The physics decides which way up a die lands, the RNG decides what it rolled: swap
+  // two labels so the face that landed on top carries the rolled value.
+  function relabel(b, top) {
+    const n = b.sides === 4 ? 4 : shape(b.sides).faces.length;
+    b.perm = range(n, (i) => i);
+    b.perm[top] = b.face;
+    b.perm[b.face] = top;
+  }
+  const labelOf = (b, idx) => (b.perm ? b.perm[idx] : idx);
+
+  // --- camera ----------------------------------------------------------------------
+
+  // World: x right, y up off the table, z along the table towards us. The camera looks
+  // down at the table from 24° off vertical, orthographic so labels map affinely.
+  const TILT = 0.42;
+  const SN = Math.sin(TILT), CS = Math.cos(TILT);
+  const CAMERA = [1, 0, 0, 0, SN, -CS, 0, CS, SN];   // world -> view (x right, y up, z out)
+
+  // A pose for dice with no physics behind them (the idle die, reduced motion):
+  // the result facing up, turned a little at random about the vertical.
+  function restingPose(b) {
+    const { verts, faces } = shape(b.sides);
+    let up, fwd;
+    if (b.sides === 4) {
+      up = norm(verts[b.face]);
+      const other = verts[(b.face + 1) % 4];
+      fwd = norm(sub(other, scale(up, dot(other, up))));
+    } else {
+      up = faces[b.face].normal;
+      fwd = scale(faces[b.face].up, -1);   // label reads upright from the camera
+    }
+    const toWorld = [...cross(up, fwd), ...up, ...fwd];   // rows: body axes -> world x, y, z
+    return mul(rotation([0, 1, 0], (Math.random() - 0.5) * 0.5), toWorld);
+  }
+
+  function quatToMatrix([x, y, z, w]) {
+    return [
+      1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+      2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+      2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
+    ];
+  }
+
+  // --- physics -----------------------------------------------------------------------
+
+  // cannon-es, fetched once the page has painted so it never delays startup.
+  let physics = null;
+  const loadPhysics = () => (physics ||= import('./vendor/cannon-es.js').catch(() => null));
+
+  const STEP = 1 / 60;
+  const MAX_STEPS = 240;      // 4 s; anything still moving after that just stops there
+  const GRAVITY = 90;         // die radii per s²: real gravity at this scale looks floaty
+
+  const nextTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Throws the dice and runs the whole simulation up front, recording every frame, so
+  // the faces can be relabelled before the first frame is shown. A dozen d20s can take
+  // a while on a phone, so it gives the page a turn every few milliseconds; it gives up
+  // (returning null) if `stale()` says a newer roll has come along.
+  async function simulate(C, bodies, halfW, halfD, stale) {
+    const world = new C.World({ gravity: new C.Vec3(0, -GRAVITY, 0), allowSleep: true });
+    world.broadphase = new C.SAPBroadphase(world);
+    const dieMat = new C.Material(), tableMat = new C.Material();
+    world.addContactMaterial(new C.ContactMaterial(dieMat, tableMat, { friction: 0.3, restitution: 0.35 }));
+    world.addContactMaterial(new C.ContactMaterial(dieMat, dieMat, { friction: 0.15, restitution: 0.45 }));
+
+    // The table and four walls, each a plane facing into the tray.
+    const walls = [
+      [[0, 0, 0], [1, 0, 0], -Math.PI / 2],
+      [[-halfW, 0, 0], [0, 1, 0], Math.PI / 2],
+      [[halfW, 0, 0], [0, 1, 0], -Math.PI / 2],
+      [[0, 0, -halfD], [0, 1, 0], 0],
+      [[0, 0, halfD], [0, 1, 0], Math.PI],
+    ];
+    for (const [pos, axis, angle] of walls) {
+      const plane = new C.Body({ mass: 0, material: tableMat, shape: new C.Plane() });
+      plane.position.set(...pos);
+      plane.quaternion.setFromAxisAngle(new C.Vec3(...axis), angle);
+      world.addBody(plane);
+    }
+
+    // Thrown from one side, in a loose bunch, spinning.
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const rows = Math.min(bodies.length, Math.max(1, Math.floor((2 * halfD - 2) / 2.1)));
+    const rigid = bodies.map((b, i) => {
+      const { verts, faces } = shape(b.sides);
+      const k = SIZE[b.sides];
+      const body = new C.Body({
+        mass: 1,
+        material: dieMat,
+        linearDamping: 0.1,
+        angularDamping: 0.1,
+        // Asleep counts as settled: it stops a die jittering on top of another one
+        // from keeping the whole simulation going.
+        sleepSpeedLimit: 0.4,
+        sleepTimeLimit: 0.25,
+        shape: new C.ConvexPolyhedron({
+          vertices: verts.map((v) => new C.Vec3(v[0] * k, v[1] * k, v[2] * k)),
+          faces: faces.map((f) => f.ring),
+        }),
+      });
+      const col = Math.floor(i / rows), row = i % rows;
+      body.position.set(
+        side * (halfW - 1.2 - col * 2.1),
+        1.4 + Math.random() * 0.6 + (col % 2) * 0.4,
+        (row - (rows - 1) / 2) * 2.1 + (Math.random() - 0.5) * 0.3,
+      );
+      body.quaternion.setFromAxisAngle(new C.Vec3(...norm([Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5])), Math.random() * 2 * Math.PI);
+      body.velocity.set(-side * (10 + Math.random() * 8), Math.random() * 3, (Math.random() - 0.5) * 6);
+      body.angularVelocity.set(...range(3, () => (Math.random() - 0.5) * 40));
+      world.addBody(body);
+      return body;
+    });
+
+    const frames = [];
+    let slice = performance.now();
+    for (let step = 0; step < MAX_STEPS; step++) {
+      if (performance.now() - slice > 8) {
+        await nextTask();
+        if (stale()) return null;
+        slice = performance.now();
+      }
+      world.step(STEP);
+      const f = new Float32Array(rigid.length * 7);
+      rigid.forEach((r, i) => {
+        f.set([r.position.x, r.position.y, r.position.z, r.quaternion.x, r.quaternion.y, r.quaternion.z, r.quaternion.w], i * 7);
+      });
+      frames.push(f);
+      if (rigid.every((r) => r.sleepState === C.Body.SLEEPING)) break;
+    }
+    return frames;
   }
 
   // --- drawing -------------------------------------------------------------------
@@ -208,14 +335,7 @@
   const LIGHT = norm([-0.45, 0.65, 0.8]);
   const BODY = [124, 98, 214];
   const INK = { '': '#f4f0ff', max: '#86efac', min: '#fca5a5' };
-
-  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
-  function bounce(t) {
-    // Lands at t = 0.45, then two shrinking hops.
-    if (t < 0.45) return 1 - (t / 0.45) ** 2;
-    if (t < 0.75) { const u = (t - 0.6) / 0.15; return 0.12 * (1 - u * u); }
-    const u = (t - 0.875) / 0.125; return 0.03 * (1 - u * u);
-  }
+  const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
   function shade(normal) {
     const k = 0.38 + 0.62 * Math.max(0, dot(normal, LIGHT));
@@ -228,6 +348,30 @@
     6: [[-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1]],
   };
 
+  // Lays the canvas over a patch of a face: `center`, `right` and `up` are in the
+  // die's frame, and 100 canvas units span `radius` of it.
+  function onFace(ctx, m, s, cx, cy, dpr, center, right, up, radius) {
+    const c = apply(m, center), r = apply(m, right), u = apply(m, up);
+    const k = (s * radius) / 100;
+    ctx.setTransform(
+      dpr * k * r[0], -dpr * k * r[1], -dpr * k * u[0], dpr * k * u[1],
+      dpr * (cx + c[0] * s), dpr * (cy - c[1] * s),
+    );
+  }
+
+  function label(ctx, text, width) {
+    ctx.font = `700 100px ${FONT}`;
+    const fit = Math.min(1.05, width / ctx.measureText(text).width);
+    ctx.font = `700 ${Math.round(100 * fit)}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 0, 4);
+    // 6 and 9 get a bar so they can't be read upside down.
+    if (text === '6' || text === '9') ctx.fillRect(-22 * fit, 44 * fit, 44 * fit, 8 * fit);
+  }
+
+  // `m` turns the die's frame into view space; (cx, cy) is its centre on screen and
+  // `size` the pixels per unit.
   function drawBody(ctx, b, cx, cy, size, m, dpr) {
     const { verts, faces } = shape(b.sides);
     const s = size * SIZE[b.sides];
@@ -252,35 +396,33 @@
       // Labels fade out towards the silhouette, where they'd be squashed to a line.
       const alpha = Math.min(1, (n[2] - 0.12) / 0.35);
       if (alpha <= 0) return;
-
-      // Map the face's own 2D frame onto the screen, so the label lies on the face.
-      const c = apply(m, f.center), r = apply(m, f.right), u = apply(m, f.up);
-      const k = (s * f.inner) / 100;   // 100 label units = the face's inner radius
-      ctx.setTransform(
-        dpr * k * r[0], -dpr * k * r[1], -dpr * k * u[0], dpr * k * u[1],
-        dpr * (cx + c[0] * s), dpr * (cy - c[1] * s),
-      );
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = idx === b.face ? INK[b.tone] : INK[''];
 
-      if (b.sides === 6) {
-        ctx.beginPath();
-        for (const [px, py] of PIPS[idx + 1]) {
-          ctx.moveTo(px * 52 + 17, -py * 52);
-          ctx.arc(px * 52, -py * 52, 17, 0, Math.PI * 2);
+      if (b.sides === 4) {
+        // A d4 has a number in each corner of each face; the one at the top point counts.
+        for (const vi of f.ring) {
+          const toward = norm(sub(verts[vi], f.center));
+          const at = [f.center[0] + toward[0] * f.inner * 1.05, f.center[1] + toward[1] * f.inner * 1.05, f.center[2] + toward[2] * f.inner * 1.05];
+          onFace(ctx, m, s, cx, cy, dpr, at, cross(toward, f.normal), toward, f.inner * 0.5);
+          const value = labelOf(b, vi);
+          ctx.fillStyle = value === b.face ? INK[b.tone] : INK[''];
+          label(ctx, String(value + 1), 120);
         }
-        ctx.fill();
       } else {
-        const text = b.labels ? b.labels[idx] : String(idx + 1);
-        const width = (b.sides === 10 ? 105 : 150);   // a d10 kite is narrow at its centre
-        ctx.font = '700 100px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-        const fit = Math.min(1.05, width / ctx.measureText(text).width);
-        ctx.font = `700 ${Math.round(100 * fit)}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, 0, 4);
-        // 6 and 9 get a bar so they can't be read upside down.
-        if (text === '6' || text === '9') ctx.fillRect(-22 * fit, 44 * fit, 44 * fit, 8 * fit);
+        onFace(ctx, m, s, cx, cy, dpr, f.center, f.right, f.up, f.inner);
+        const value = labelOf(b, idx);
+        ctx.fillStyle = value === b.face ? INK[b.tone] : INK[''];
+        if (b.sides === 6) {
+          ctx.beginPath();
+          for (const [px, py] of PIPS[value + 1]) {
+            ctx.moveTo(px * 52 + 17, -py * 52);
+            ctx.arc(px * 52, -py * 52, 17, 0, Math.PI * 2);
+          }
+          ctx.fill();
+        } else {
+          // A d10 kite is narrow at its centre.
+          label(ctx, b.labels ? b.labels[value] : String(value + 1), b.sides === 10 ? 105 : 150);
+        }
       }
       ctx.globalAlpha = 1;
     });
@@ -291,72 +433,88 @@
   function create(canvas) {
     const ctx = canvas.getContext('2d');
     let bodies = [];
+    let frames = null;     // recorded simulation, or null for dice laid out at rest
+    let scale = 1;         // pixels per world unit while a simulation plays
     let start = 0;
     let frame = 0;
+    let rollId = 0;
     const still = matchMedia('(prefers-reduced-motion: reduce)');
 
-    function layout(w, h, n) {
-      // One row, or two if that lets the dice be bigger.
-      let best = null;
-      for (let rows = 1; rows <= 2; rows++) {
-        const cols = Math.ceil(n / rows);
-        const cell = Math.min(w / cols, h / rows, 120);
-        if (!best || cell > best.cell * 1.05) best = { rows, cols, cell };
-      }
-      return best;
-    }
+    // Start fetching the physics once the page is up, not on the first roll.
+    if (document.readyState === 'complete') setTimeout(loadPhysics, 500);
+    else addEventListener('load', () => setTimeout(loadPhysics, 500));
 
-    function draw(now) {
+    function size() {
       const dpr = window.devicePixelRatio || 1;
       const w = canvas.clientWidth, h = canvas.clientHeight;
       if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
       }
+      return { w, h, dpr };
+    }
+
+    // Dice at rest in a grid: one row, or two if that lets them be bigger.
+    function drawResting(w, h, dpr) {
+      const n = bodies.length;
+      let best = null;
+      for (let rows = 1; rows <= 2; rows++) {
+        const cols = Math.ceil(n / rows);
+        const cell = Math.min(w / cols, h / rows, 120);
+        if (!best || cell > best.cell * 1.05) best = { rows, cols, cell };
+      }
+      const { rows, cols, cell } = best;
+      const px = cell * 0.4;
+      bodies.forEach((b, i) => {
+        const row = Math.floor(i / cols);
+        const inRow = row === rows - 1 ? n - row * cols : cols;
+        const x = w / 2 + (i - row * cols - (inRow - 1) / 2) * cell;
+        const y = h / 2 + (row - (rows - 1) / 2) * cell;
+        shadow(x, y + px * 0.7, px, 0, dpr);
+        drawBody(ctx, b, x, y, px, mul(CAMERA, b.pose), dpr);
+      });
+    }
+
+    function shadow(x, y, px, height, dpr) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.32 * Math.max(0, 1 - height / 4)})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, px * 0.95, px * 0.95 * SN, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // A frame of the recorded simulation, blending between steps for high refresh rates.
+    function drawSimulated(w, h, dpr, t) {
+      // rAF's timestamp is the frame's start, which can be a hair before the throw.
+      const at = Math.min(frames.length - 1, Math.max(0, t / (STEP * 1000)));
+      const f0 = frames[Math.floor(at)], f1 = frames[Math.min(frames.length - 1, Math.floor(at) + 1)];
+      const mix = at - Math.floor(at);
+      const placed = bodies.map((b, i) => {
+        const o = i * 7;
+        const v = range(7, (k) => f0[o + k] + (f1[o + k] - f0[o + k]) * mix);
+        const q = v.slice(3);
+        const ql = Math.hypot(...q);
+        const pos = v.slice(0, 3);
+        const view = apply(CAMERA, pos);
+        return { b, pos, view, m: mul(CAMERA, quatToMatrix(q.map((c) => c / ql))) };
+      });
+      placed.sort((a, c) => a.view[2] - c.view[2]);   // far to near
+      for (const p of placed) {
+        const floor = apply(CAMERA, [p.pos[0], 0, p.pos[2]]);
+        shadow(w / 2 + floor[0] * scale, h / 2 - floor[1] * scale, scale * SIZE[p.b.sides] * 0.8, p.pos[1], dpr);
+      }
+      for (const p of placed) drawBody(ctx, p.b, w / 2 + p.view[0] * scale, h / 2 - p.view[1] * scale, scale, p.m, dpr);
+      return at < frames.length - 1;
+    }
+
+    function draw(now) {
+      const { w, h, dpr } = size();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (!bodies.length || !w || !h) return false;
-
-      const { rows, cols, cell } = layout(w, h, bodies.length);
-      const size = cell * 0.4;
-      let moving = false;
-
-      // Draw back to front by height, so a die still in the air passes over a landed one.
-      const placed = bodies.map((b, i) => {
-        const row = Math.floor(i / cols);
-        const inRow = row === rows - 1 ? bodies.length - row * cols : cols;
-        const col = i - row * cols;
-        const x = w / 2 + (col - (inRow - 1) / 2) * cell;
-        const y = h / 2 + (row - (rows - 1) / 2) * cell;
-        const t = still.matches ? 1 : Math.min(1, Math.max(0, (now - start - b.delay) / DURATION));
-        if (t < 1) moving = true;
-        const air = bounce(t);
-        const m = mul(b.rest, rotation(b.axis, b.spin * Math.pow(1 - t, 2.2)));
-        // Thrown away from us, so smaller in the air, and never higher than the tray.
-        const airSize = size * (1 - 0.2 * air);
-        const drop = Math.max(0, Math.min(b.fromY * cell, y - size * 0.8 * 1.3));
-        return {
-          b, m, air,
-          x: x + b.fromX * cell * (1 - easeOut(t)),
-          y: y - drop * air,
-          lift: drop * air,
-          size: airSize,
-        };
-      });
-      placed.sort((p, q) => p.air - q.air);
-
-      for (const p of placed) {
-        // A soft shadow on the table, smaller and fainter the higher the die is.
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const sy = p.y + p.lift + size * 0.85;
-        ctx.fillStyle = `rgba(0, 0, 0, ${0.35 * (1 - 0.6 * p.air)})`;
-        ctx.beginPath();
-        ctx.ellipse(p.x, sy, size * (0.9 - 0.3 * p.air), size * 0.22, 0, 0, Math.PI * 2);
-        ctx.fill();
-        drawBody(ctx, p.b, p.x, p.y, p.size, p.m, dpr);
-      }
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      return moving;
+      if (frames) return drawSimulated(w, h, dpr, now - start);
+      drawResting(w, h, dpr);
+      return false;
     }
 
     function tick(now) {
@@ -369,27 +527,66 @@
 
     new ResizeObserver(redraw).observe(canvas);
 
+    function showResting(list) {
+      bodies = list;
+      for (const b of bodies) b.pose = restingPose(b);
+      frames = null;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      redraw();
+    }
+
+    async function throwDice(list, id) {
+      // Sweep the last roll's dice away now: they'd be showing the wrong numbers under
+      // the new total while a big throw is being worked out.
+      showResting([]);
+      const C = await loadPhysics();
+      // Let the total paint before spending any time on the dice.
+      await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      const stale = () => id !== rollId;   // a newer roll has come along
+      if (stale()) return;
+      const { w, h } = size();
+      if (!C || !w || !h) { showResting(list); return; }
+
+      // Smaller dice when there are more of them, so they have room to tumble.
+      scale = Math.min(h / 5, Math.sqrt((w * h) / (list.length * 10)));
+      const r = 0.85;     // roughly how far a resting die's centre sits from a wall
+      const reach = 1.1;  // and how far its outline reaches on screen
+      const halfW = w / 2 / scale;
+      // A die against the back wall is drawn highest: keep its top inside the canvas.
+      const halfD = Math.max(r + 0.5, (h / 2 / scale - SN * r - reach) / CS + r);
+
+      const recorded = await simulate(C, list, halfW, halfD, stale);
+      if (!recorded) return;
+      const last = recorded[recorded.length - 1];
+      list.forEach((b, i) => {
+        const q = Array.from(last.subarray(i * 7 + 3, i * 7 + 7));
+        relabel(b, landed(b, quatToMatrix(q)));
+      });
+
+      bodies = list;
+      frames = recorded;
+      start = performance.now();
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(tick);
+    }
+
     return {
       // Throw the dice for a roll's groups.
       roll(groups) {
-        bodies = bodiesFor(groups).map(prepare);
-        start = performance.now();
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(tick);
+        const list = bodiesFor(groups);
+        rollId++;
+        if (still.matches || !list.length) showResting(list);
+        else throwDice(list, rollId);
       },
       // Show dice already at rest, with no throw.
       rest(groups) {
-        bodies = bodiesFor(groups).map(prepare);
-        start = -Infinity;
-        cancelAnimationFrame(frame);
-        frame = 0;
-        redraw();
+        rollId++;
+        showResting(bodiesFor(groups));
       },
       clear() {
-        bodies = [];
-        cancelAnimationFrame(frame);
-        frame = 0;
-        redraw();
+        rollId++;
+        showResting([]);
       },
     };
   }
