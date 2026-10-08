@@ -28,14 +28,15 @@ Each die's face is shown alongside the total; naturals and 1s are highlighted.
 
 Above the total, the dice are thrown onto a little tray: they tumble, knock into each other
 and settle on what they rolled — a d100 as a tens and a units d10, a d66 as its two d6, a d4
-read from its top point, up to 12 dice (the chips list all of them). The physics is
-[cannon-es](https://github.com/pmndrs/cannon-es), vendored as a tree-shaken, minified
-`vendor/cannon-es.js` (about 25 KB gzipped; rebuild it with `scripts/vendor-cannon.sh`), and
-the drawing is a small flat-shaded renderer in `tray.js`. The roll itself still comes from
-the crypto RNG: the throw is simulated before it's shown, and the label on whichever face lands
-on top is swapped for the rolled value. It's purely decorative — the result is on screen before
-the dice move, and the physics loads after startup. Dice the tray has no shape for (`d7`,
-`d1000`) are left off it, and *reduce motion* shows them already at rest.
+read from its top point, up to 12 dice (the chips list all of them). [three.js](https://threejs.org)
+draws them and [cannon-es](https://github.com/pmndrs/cannon-es) throws them; both are vendored
+tree-shaken and minified in `vendor/` (about 160 KB gzipped together; rebuild with
+`scripts/vendor.sh`), and the faces' numbers are painted onto canvas textures at roll time, so
+nothing else is downloaded. The roll itself still comes from the crypto RNG: the throw is
+simulated before it's shown, and the label on whichever face lands on top is swapped for the
+rolled value. It's purely decorative — the result is on screen before the dice move, and the
+libraries load after startup. Dice the tray has no shape for (`d7`, `d1000`) are left off it,
+and *reduce motion* shows them already at rest.
 
 ## Install
 

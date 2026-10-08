@@ -1,47 +1,20 @@
 'use strict';
 
-// A 3D dice tray: flat-shaded polyhedra on a 2D canvas, thrown by cannon-es physics.
-// It's decoration only — the result is already on screen when the dice start
-// tumbling, so it never holds a roll up, and the physics library loads after startup.
+// A 3D dice tray: three.js draws the dice, cannon-es throws them. It's decoration only —
+// the result is already on screen when the dice start tumbling, so it never holds a roll
+// up, and both libraries load after startup.
 
 (() => {
   const MAX_BODIES = 12;      // the chips below the total list every die; this is a sample
   const PHI = (1 + Math.sqrt(5)) / 2;
 
-  // --- vector & matrix helpers (3x3 matrices as row-major arrays of 9) ---------
+  // --- vector helpers (plain arrays; the shapes are worked out before three.js loads) ---
 
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   const scale = (a, k) => [a[0] * k, a[1] * k, a[2] * k];
   const norm = (a) => scale(a, 1 / Math.hypot(a[0], a[1], a[2]));
-
-  const apply = (m, v) => [
-    m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
-    m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
-    m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
-  ];
-
-  function mul(a, b) {
-    const out = new Array(9);
-    for (let r = 0; r < 3; r++) {
-      for (let c = 0; c < 3; c++) {
-        out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
-      }
-    }
-    return out;
-  }
-
-  // Rodrigues: rotation of `angle` about unit `axis`.
-  function rotation(axis, angle) {
-    const [x, y, z] = axis;
-    const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
-    return [
-      t * x * x + c, t * x * y - s * z, t * x * z + s * y,
-      t * x * y + s * z, t * y * y + c, t * y * z - s * x,
-      t * x * z - s * y, t * y * z + s * x, t * z * z + c,
-    ];
-  }
 
   // --- shapes --------------------------------------------------------------------
 
@@ -186,12 +159,12 @@
     return b.sides === 4 ? verts[idx] : faces[idx].normal;
   }
 
-  // Whichever label slot is pointing up for a body orientation `m` (body -> world).
-  function landed(b, m) {
+  // Whichever label slot is pointing up for a body orientation `q`.
+  function landed(b, q) {
     const n = b.sides === 4 ? 4 : shape(b.sides).faces.length;
     let best = 0, bestY = -Infinity;
     for (let i = 0; i < n; i++) {
-      const y = apply(m, upOf(b, i))[1];
+      const y = new T.Vector3(...upOf(b, i)).applyQuaternion(q).y;
       if (y > bestY) { bestY = y; best = i; }
     }
     return best;
@@ -207,13 +180,25 @@
   }
   const labelOf = (b, idx) => (b.perm ? b.perm[idx] : idx);
 
+  // --- libraries ---------------------------------------------------------------------
+
+  // three.js and cannon-es, fetched once the page has painted so they never delay startup.
+  let T = null;          // three.js, once loaded
+  let C = null;          // cannon-es, once loaded
+  let libs = null;
+  const loadLibs = () => (libs ||= Promise.all([import('./vendor/three.js'), import('./vendor/cannon-es.js')])
+    .then(([three, cannon]) => { T = three; C = cannon; return true; })
+    .catch(() => false));
+
   // --- camera ----------------------------------------------------------------------
 
   // World: x right, y up off the table, z along the table towards us. The camera looks
-  // down at the table from 24° off vertical, orthographic so labels map affinely.
+  // down at the table from 24° off vertical, orthographic so dice don't change size
+  // across the tray.
   const TILT = 0.42;
   const SN = Math.sin(TILT), CS = Math.cos(TILT);
-  const CAMERA = [1, 0, 0, 0, SN, -CS, 0, CS, SN];   // world -> view (x right, y up, z out)
+  const VIEW = [0, CS, SN];      // from the table towards the camera
+  const SCREEN_UP = [0, SN, -CS];
 
   // A pose for dice with no physics behind them (the idle die, reduced motion):
   // the result facing up, turned a little at random about the vertical.
@@ -228,23 +213,13 @@
       up = faces[b.face].normal;
       fwd = scale(faces[b.face].up, -1);   // label reads upright from the camera
     }
-    const toWorld = [...cross(up, fwd), ...up, ...fwd];   // rows: body axes -> world x, y, z
-    return mul(rotation([0, 1, 0], (Math.random() - 0.5) * 0.5), toWorld);
-  }
-
-  function quatToMatrix([x, y, z, w]) {
-    return [
-      1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
-      2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-      2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y),
-    ];
+    const [x, y, z] = [cross(up, fwd), up, fwd];   // rows: body axes -> world x, y, z
+    const m = new T.Matrix4().set(...x, 0, ...y, 0, ...z, 0, 0, 0, 0, 1);
+    m.premultiply(new T.Matrix4().makeRotationY((Math.random() - 0.5) * 0.5));
+    return new T.Quaternion().setFromRotationMatrix(m);
   }
 
   // --- physics -----------------------------------------------------------------------
-
-  // cannon-es, fetched once the page has painted so it never delays startup.
-  let physics = null;
-  const loadPhysics = () => (physics ||= import('./vendor/cannon-es.js').catch(() => null));
 
   const STEP = 1 / 60;
   const MAX_STEPS = 240;      // 4 s; anything still moving after that just stops there
@@ -330,17 +305,15 @@
     return frames;
   }
 
-  // --- drawing -------------------------------------------------------------------
 
-  const LIGHT = norm([-0.45, 0.65, 0.8]);
-  const BODY = [124, 98, 214];
+  // --- dice meshes -----------------------------------------------------------------
+
+  const BODY = '#7c62d6';
+  const EDGE = 'rgba(10, 8, 20, 0.45)';
   const INK = { '': '#f4f0ff', max: '#86efac', min: '#fca5a5' };
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-
-  function shade(normal) {
-    const k = 0.38 + 0.62 * Math.max(0, dot(normal, LIGHT));
-    return `rgb(${BODY.map((c) => Math.round(c * k)).join(',')})`;
-  }
+  const CELL = 128;           // texture pixels per face
+  const FILL = 0.47;          // how much of its cell a face spans, from the centre
 
   const PIPS = {
     1: [[0, 0]], 2: [[-1, 1], [1, -1]], 3: [[-1, 1], [0, 0], [1, -1]],
@@ -348,15 +321,49 @@
     6: [[-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1]],
   };
 
-  // Lays the canvas over a patch of a face: `center`, `right` and `up` are in the
-  // die's frame, and 100 canvas units span `radius` of it.
-  function onFace(ctx, m, s, cx, cy, dpr, center, right, up, radius) {
-    const c = apply(m, center), r = apply(m, right), u = apply(m, up);
-    const k = (s * radius) / 100;
-    ctx.setTransform(
-      dpr * k * r[0], -dpr * k * r[1], -dpr * k * u[0], dpr * k * u[1],
-      dpr * (cx + c[0] * s), dpr * (cy - c[1] * s),
-    );
+  // Each face gets a square cell of the texture, centred on the face's centre and
+  // lined up with its right/up axes, so a label drawn upright in the cell lies upright
+  // on the face. `layout` says where face `i`'s cell is and how a point maps into it.
+  function cells(sides) {
+    const { verts, faces } = shape(sides);
+    const cols = Math.ceil(Math.sqrt(faces.length));
+    const rows = Math.ceil(faces.length / cols);
+    const layout = faces.map((f, i) => {
+      const reach = Math.max(...f.ring.map((vi) => Math.hypot(...sub(verts[vi], f.center))));
+      const k = FILL / reach;   // cell widths per unit
+      return {
+        col: i % cols, row: Math.floor(i / cols), k,
+        // a point's (right, up) coordinates on the face, in cell widths from the centre
+        local: (p) => { const d = sub(p, f.center); return [dot(d, f.right) * k, dot(d, f.up) * k]; },
+      };
+    });
+    return { cols, rows, layout };
+  }
+
+  const geometries = {};
+  function geometry(sides) {
+    if (geometries[sides]) return geometries[sides];
+    const { verts, faces } = shape(sides);
+    const { cols, rows, layout } = cells(sides);
+    const k = SIZE[sides];
+    const pos = [], normal = [], uv = [];
+    faces.forEach((f, i) => {
+      const { col, row, local } = layout[i];
+      // A fan of triangles per face; the ring already winds anticlockwise from outside.
+      for (let t = 1; t + 1 < f.ring.length; t++) {
+        for (const vi of [f.ring[0], f.ring[t], f.ring[t + 1]]) {
+          const [a, b] = local(verts[vi]);
+          pos.push(...scale(verts[vi], k));
+          normal.push(...f.normal);
+          uv.push((col + 0.5 + a) / cols, 1 - (row + 0.5 - b) / rows);
+        }
+      }
+    });
+    const g = new T.BufferGeometry();
+    g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new T.Float32BufferAttribute(normal, 3));
+    g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
+    return (geometries[sides] = g);
   }
 
   function label(ctx, text, width) {
@@ -370,92 +377,130 @@
     if (text === '6' || text === '9') ctx.fillRect(-22 * fit, 44 * fit, 44 * fit, 8 * fit);
   }
 
-  // `m` turns the die's frame into view space; (cx, cy) is its centre on screen and
-  // `size` the pixels per unit.
-  function drawBody(ctx, b, cx, cy, size, m, dpr) {
+  // The die's faces, outlines and numbers, painted for this roll's labels.
+  function texture(b) {
     const { verts, faces } = shape(b.sides);
-    const s = size * SIZE[b.sides];
-    const screen = verts.map((v) => { const p = apply(m, v); return [cx + p[0] * s, cy - p[1] * s]; });
-
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = Math.max(1, s * 0.03);
-    ctx.strokeStyle = 'rgba(10, 8, 20, 0.45)';
+    const { cols, rows, layout } = cells(b.sides);
+    const canvas = document.createElement('canvas');
+    canvas.width = cols * CELL;
+    canvas.height = rows * CELL;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = BODY;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     faces.forEach((f, idx) => {
-      const n = apply(m, f.normal);
-      if (n[2] <= 0) return;   // convex, so back-face culling is all the sorting we need
+      const { col, row, k, local } = layout[idx];
+      const x0 = (col + 0.5) * CELL, y0 = (row + 0.5) * CELL;
+      const at = (p) => { const [a, up] = local(p); return [x0 + a * CELL, y0 - up * CELL]; };
 
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.beginPath();
-      f.ring.forEach((vi, k) => (k ? ctx.lineTo : ctx.moveTo).call(ctx, screen[vi][0], screen[vi][1]));
+      f.ring.forEach((vi, n) => ctx[n ? 'lineTo' : 'moveTo'](...at(verts[vi])));
       ctx.closePath();
-      ctx.fillStyle = shade(n);
-      ctx.fill();
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = CELL * 0.035;
+      ctx.strokeStyle = EDGE;
       ctx.stroke();
 
-      // Labels fade out towards the silhouette, where they'd be squashed to a line.
-      const alpha = Math.min(1, (n[2] - 0.12) / 0.35);
-      if (alpha <= 0) return;
-      ctx.globalAlpha = alpha;
+      // 100 label units = the face's inner radius.
+      const unit = (f.inner * k * CELL) / 100;
+      const ink = (value) => (value === b.face ? INK[b.tone] : INK['']);
 
       if (b.sides === 4) {
         // A d4 has a number in each corner of each face; the one at the top point counts.
         for (const vi of f.ring) {
           const toward = norm(sub(verts[vi], f.center));
-          const at = [f.center[0] + toward[0] * f.inner * 1.05, f.center[1] + toward[1] * f.inner * 1.05, f.center[2] + toward[2] * f.inner * 1.05];
-          onFace(ctx, m, s, cx, cy, dpr, at, cross(toward, f.normal), toward, f.inner * 0.5);
+          const [ta, tb] = [dot(toward, f.right), dot(toward, f.up)];
+          const [x, y] = at(f.center.map((c, i) => c + toward[i] * f.inner * 1.05));
+          const u = unit * 0.5;
+          ctx.setTransform(tb * u, ta * u, -ta * u, tb * u, x, y);   // label's up = towards the corner
           const value = labelOf(b, vi);
-          ctx.fillStyle = value === b.face ? INK[b.tone] : INK[''];
+          ctx.fillStyle = ink(value);
           label(ctx, String(value + 1), 120);
         }
-      } else {
-        onFace(ctx, m, s, cx, cy, dpr, f.center, f.right, f.up, f.inner);
-        const value = labelOf(b, idx);
-        ctx.fillStyle = value === b.face ? INK[b.tone] : INK[''];
-        if (b.sides === 6) {
-          ctx.beginPath();
-          for (const [px, py] of PIPS[value + 1]) {
-            ctx.moveTo(px * 52 + 17, -py * 52);
-            ctx.arc(px * 52, -py * 52, 17, 0, Math.PI * 2);
-          }
-          ctx.fill();
-        } else {
-          // A d10 kite is narrow at its centre.
-          label(ctx, b.labels ? b.labels[value] : String(value + 1), b.sides === 10 ? 105 : 150);
-        }
+        return;
       }
-      ctx.globalAlpha = 1;
+
+      ctx.setTransform(unit, 0, 0, unit, x0, y0);
+      const value = labelOf(b, idx);
+      ctx.fillStyle = ink(value);
+      if (b.sides === 6) {
+        ctx.beginPath();
+        for (const [px, py] of PIPS[value + 1]) {
+          ctx.moveTo(px * 52 + 17, -py * 52);
+          ctx.arc(px * 52, -py * 52, 17, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      } else {
+        // A d10 kite is narrow at its centre.
+        label(ctx, b.labels ? b.labels[value] : String(value + 1), b.sides === 10 ? 105 : 150);
+      }
     });
+
+    const tex = new T.CanvasTexture(canvas);
+    tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
   }
 
   // --- the tray --------------------------------------------------------------------
 
   function create(canvas) {
-    const ctx = canvas.getContext('2d');
-    let bodies = [];
-    let frames = null;     // recorded simulation, or null for dice laid out at rest
-    let scale = 1;         // pixels per world unit while a simulation plays
+    let bodies = [];        // the dice on the table, each with its `mesh`
+    let frames = null;      // recorded simulation, or null for dice laid out at rest
+    let zoom = 1;           // pixels per world unit
     let start = 0;
     let frame = 0;
     let rollId = 0;
+    let gl = null;          // renderer, scene, camera once three.js is here
     const still = matchMedia('(prefers-reduced-motion: reduce)');
 
-    // Start fetching the physics once the page is up, not on the first roll.
-    if (document.readyState === 'complete') setTimeout(loadPhysics, 500);
-    else addEventListener('load', () => setTimeout(loadPhysics, 500));
+    function setup() {
+      if (gl) return gl;
+      const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = T.PCFSoftShadowMap;
+      const scene = new T.Scene();
+      const camera = new T.OrthographicCamera();
+      camera.position.set(...scale(VIEW, 40));
+      camera.up.set(...SCREEN_UP);
+      camera.lookAt(0, 0, 0);
+      camera.near = 1;
+      camera.far = 80;
 
-    function size() {
-      const dpr = window.devicePixelRatio || 1;
-      const w = canvas.clientWidth, h = canvas.clientHeight;
-      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
+      scene.add(new T.AmbientLight(0xffffff, 0.8));
+      const sun = new T.DirectionalLight(0xffffff, 2.8);
+      sun.position.set(-4, 16, 3);   // high and to the left, so shadows fall short and to the right
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(1024, 1024);
+      sun.shadow.radius = 4;
+      Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, near: 1, far: 40 });
+      scene.add(sun);
+
+      const table = new T.Mesh(new T.PlaneGeometry(100, 100), new T.ShadowMaterial({ opacity: 0.35 }));
+      table.rotation.x = -Math.PI / 2;
+      table.receiveShadow = true;
+      scene.add(table);
+      return (gl = { renderer, scene, camera });
+    }
+
+    function place(list) {
+      for (const b of bodies) {
+        if (!b.mesh) continue;
+        gl.scene.remove(b.mesh);
+        b.mesh.material.map.dispose();
+        b.mesh.material.dispose();
       }
-      return { w, h, dpr };
+      bodies = list;
+      for (const b of bodies) {
+        b.mesh = new T.Mesh(geometry(b.sides), new T.MeshLambertMaterial({ map: texture(b) }));
+        b.mesh.castShadow = true;
+        gl.scene.add(b.mesh);
+      }
     }
 
     // Dice at rest in a grid: one row, or two if that lets them be bigger.
-    function drawResting(w, h, dpr) {
+    function layOut(w, h) {
       const n = bodies.length;
       let best = null;
       for (let rows = 1; rows <= 2; rows++) {
@@ -464,57 +509,48 @@
         if (!best || cell > best.cell * 1.05) best = { rows, cols, cell };
       }
       const { rows, cols, cell } = best;
-      const px = cell * 0.4;
+      zoom = cell * 0.4;
       bodies.forEach((b, i) => {
         const row = Math.floor(i / cols);
         const inRow = row === rows - 1 ? n - row * cols : cols;
-        const x = w / 2 + (i - row * cols - (inRow - 1) / 2) * cell;
-        const y = h / 2 + (row - (rows - 1) / 2) * cell;
-        shadow(x, y + px * 0.7, px, 0, dpr);
-        drawBody(ctx, b, x, y, px, mul(CAMERA, b.pose), dpr);
+        const dx = (i - row * cols - (inRow - 1) / 2) * cell / zoom;
+        const dy = (row - (rows - 1) / 2) * cell / zoom;
+        // Sit it on the table, then slide it back so its centre lands in its cell.
+        b.mesh.quaternion.copy(b.pose);
+        b.mesh.position.set(0, 0, 0);
+        b.mesh.updateMatrixWorld();
+        const lift = -new T.Box3().setFromObject(b.mesh).min.y;
+        b.mesh.position.set(dx, lift, (dy + SN * lift) / CS);
       });
-    }
-
-    function shadow(x, y, px, height, dpr) {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = `rgba(0, 0, 0, ${0.32 * Math.max(0, 1 - height / 4)})`;
-      ctx.beginPath();
-      ctx.ellipse(x, y, px * 0.95, px * 0.95 * SN, 0, 0, Math.PI * 2);
-      ctx.fill();
     }
 
     // A frame of the recorded simulation, blending between steps for high refresh rates.
-    function drawSimulated(w, h, dpr, t) {
-      // rAF's timestamp is the frame's start, which can be a hair before the throw.
+    function playBack(t) {
       const at = Math.min(frames.length - 1, Math.max(0, t / (STEP * 1000)));
-      const f0 = frames[Math.floor(at)], f1 = frames[Math.min(frames.length - 1, Math.floor(at) + 1)];
-      const mix = at - Math.floor(at);
-      const placed = bodies.map((b, i) => {
-        const o = i * 7;
-        const v = range(7, (k) => f0[o + k] + (f1[o + k] - f0[o + k]) * mix);
-        const q = v.slice(3);
-        const ql = Math.hypot(...q);
-        const pos = v.slice(0, 3);
-        const view = apply(CAMERA, pos);
-        return { b, pos, view, m: mul(CAMERA, quatToMatrix(q.map((c) => c / ql))) };
+      const i = Math.floor(at), mix = at - i;
+      const f0 = frames[i], f1 = frames[Math.min(frames.length - 1, i + 1)];
+      const q0 = new T.Quaternion(), q1 = new T.Quaternion();
+      bodies.forEach((b, n) => {
+        const o = n * 7;
+        b.mesh.position.set(f0[o], f0[o + 1], f0[o + 2]).lerp(new T.Vector3(f1[o], f1[o + 1], f1[o + 2]), mix);
+        b.mesh.quaternion.slerpQuaternions(q0.fromArray(f0, o + 3), q1.fromArray(f1, o + 3), mix);
       });
-      placed.sort((a, c) => a.view[2] - c.view[2]);   // far to near
-      for (const p of placed) {
-        const floor = apply(CAMERA, [p.pos[0], 0, p.pos[2]]);
-        shadow(w / 2 + floor[0] * scale, h / 2 - floor[1] * scale, scale * SIZE[p.b.sides] * 0.8, p.pos[1], dpr);
-      }
-      for (const p of placed) drawBody(ctx, p.b, w / 2 + p.view[0] * scale, h / 2 - p.view[1] * scale, scale, p.m, dpr);
       return at < frames.length - 1;
     }
 
     function draw(now) {
-      const { w, h, dpr } = size();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (!bodies.length || !w || !h) return false;
-      if (frames) return drawSimulated(w, h, dpr, now - start);
-      drawResting(w, h, dpr);
-      return false;
+      if (!gl) return false;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!w || !h) return false;
+      gl.renderer.setPixelRatio(window.devicePixelRatio || 1);
+      gl.renderer.setSize(w, h, false);
+      let moving = false;
+      if (frames) moving = playBack(now - start);
+      else layOut(w, h);
+      Object.assign(gl.camera, { left: -w / 2 / zoom, right: w / 2 / zoom, top: h / 2 / zoom, bottom: -h / 2 / zoom });
+      gl.camera.updateProjectionMatrix();
+      gl.renderer.render(gl.scene, gl.camera);
+      return moving;
     }
 
     // Runs only while a recorded throw is playing: the physics finished before the
@@ -531,65 +567,82 @@
     new ResizeObserver(redraw).observe(canvas);
 
     function showResting(list) {
-      bodies = list;
-      for (const b of bodies) b.pose = restingPose(b);
-      frames = null;
       cancelAnimationFrame(frame);
       frame = 0;
+      frames = null;
+      if (!gl) return;
+      for (const b of list) b.pose = restingPose(b);
+      place(list);
       redraw();
     }
 
     async function throwDice(list, id) {
       // Sweep the last roll's dice away now: they'd be showing the wrong numbers under
       // the new total while a big throw is being worked out.
-      showResting([]);
-      const C = await loadPhysics();
+      if (gl) showResting([]);
+      const ok = await loadLibs();
       // Let the total paint before spending any time on the dice.
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
       const stale = () => id !== rollId;   // a newer roll has come along
-      if (stale()) return;
-      const { w, h } = size();
-      if (!C || !w || !h) { showResting(list); return; }
+      if (stale() || !ok) return;
+      setup();
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!w || !h) { showResting(list); return; }
 
       // Smaller dice when there are more of them, so they have room to tumble.
-      scale = Math.min(h / 5, Math.sqrt((w * h) / (list.length * 10)));
+      const throwScale = Math.min(h / 5, Math.sqrt((w * h) / (list.length * 10)));
       const r = 0.85;     // roughly how far a resting die's centre sits from a wall
       const reach = 1.1;  // and how far its outline reaches on screen
-      const halfW = w / 2 / scale;
+      const halfW = w / 2 / throwScale;
       // A die against the back wall is drawn highest: keep its top inside the canvas.
-      const halfD = Math.max(r + 0.5, (h / 2 / scale - SN * r - reach) / CS + r);
+      const halfD = Math.max(r + 0.5, (h / 2 / throwScale - SN * r - reach) / CS + r);
 
       const recorded = await simulate(C, list, halfW, halfD, stale);
       if (!recorded) return;
       const last = recorded[recorded.length - 1];
-      list.forEach((b, i) => {
-        const q = Array.from(last.subarray(i * 7 + 3, i * 7 + 7));
-        relabel(b, landed(b, quatToMatrix(q)));
-      });
+      list.forEach((b, i) => relabel(b, landed(b, new T.Quaternion().fromArray(last, i * 7 + 3))));
 
-      bodies = list;
+      place(list);
+      zoom = throwScale;
       frames = recorded;
       start = performance.now();
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(tick);
     }
 
+    // Fetch the libraries once the page is up, and put a die on the table.
+    let pending = null;
+    const boot = () => loadLibs().then((ok) => {
+      if (!ok) return;
+      setup();
+      if (pending && !frames && !bodies.length) showResting(pending);
+    });
+    if (document.readyState === 'complete') setTimeout(boot, 0);
+    else addEventListener('load', () => setTimeout(boot, 0));
+
     return {
       // Throw the dice for a roll's groups.
       roll(groups) {
         const list = bodiesFor(groups);
         rollId++;
-        if (still.matches || !list.length) showResting(list);
-        else throwDice(list, rollId);
+        pending = null;
+        if (still.matches || !list.length) {
+          if (gl) showResting(list);
+          else pending = list;
+        } else {
+          throwDice(list, rollId);
+        }
       },
       // Show dice already at rest, with no throw.
       rest(groups) {
         rollId++;
-        showResting(bodiesFor(groups));
+        if (gl) showResting(bodiesFor(groups));
+        else pending = bodiesFor(groups);
       },
       clear() {
         rollId++;
-        showResting([]);
+        pending = null;
+        if (gl) showResting([]);
       },
     };
   }
